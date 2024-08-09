@@ -40,6 +40,8 @@ from ...utils import (
 from ...utils.constants import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 from .configuration_videomae import VideoMAEConfig
 
+from dkernel import SparseAttention, LocalStrideSparseAttention
+
 
 logger = logging.get_logger(__name__)
 
@@ -299,6 +301,55 @@ class VideoMAESdpaSelfAttention(VideoMAESelfAttention):
 
         return context_layer, None
 
+class VideoMAESparseSelfAttention(VideoMAESelfAttention):
+    def __init__(self, config: VideoMAEConfig) -> None:
+        super().__init__(config)
+        self.attention_probs_dropout_prob = config.attention_probs_dropout_prob
+        
+        print('Utilizing dkernel')
+        block_size = 32 # sparse block size, minimum 16
+        local_blocks = 32 # num local blocks, always attend to up to 64 * 16=1024 tokens
+        vert_stride = 8 # attend to 1 block per every 8 blocks after the local window above
+        max_seq_len = 1568 # model supports up to 8192 seqlen
+        num_heads = 32
+        device = "cuda"
+
+        q, k, v = [torch.rand(1, 12, 1568, 64,
+            device=device).requires_grad_()
+            for _ in range(3)]
+        self.attn = LocalStrideSparseAttention(
+                         self.num_attention_heads,
+                         max_seq_len,
+                         block_size,
+                         local_blocks,
+                         vert_stride,
+                         seq_dim=2, # q/k/v layout: (batch, seq, heads, head_dim)
+                        )
+        self.attn.to(device).to(self.query.weight.dtype)
+        # For the first time, it needs to warmup, so could be slow.
+        self.attn(q, k, v)
+
+    def forward(
+        self, hidden_states, head_mask: Optional[torch.Tensor] = None, output_attentions: bool = False
+    ) -> Union[Tuple[torch.Tensor, torch.Tensor], Tuple[torch.Tensor]]:
+        k_bias = torch.zeros_like(self.v_bias, requires_grad=False) if self.q_bias is not None else None
+        keys = nn.functional.linear(input=hidden_states, weight=self.key.weight, bias=k_bias)
+        values = nn.functional.linear(input=hidden_states, weight=self.value.weight, bias=self.v_bias)
+        queries = nn.functional.linear(input=hidden_states, weight=self.query.weight, bias=self.q_bias)
+
+        key_layer = self.transpose_for_scores(keys)
+        value_layer = self.transpose_for_scores(values)
+        query_layer = self.transpose_for_scores(queries)
+
+        sm_scale = 1/math.sqrt(self.attention_head_size)
+           
+        context_layer = self.attn(query_layer, key_layer, value_layer, sm_scale)
+        
+        context_layer = context_layer.permute(0, 2, 1, 3).contiguous()
+        new_context_layer_shape = context_layer.size()[:-2] + (self.all_head_size,)
+        context_layer = context_layer.view(new_context_layer_shape)
+
+        return context_layer, None
 
 # Copied from transformers.models.vit.modeling_vit.ViTSelfOutput with ViT->VideoMAE
 class VideoMAESelfOutput(nn.Module):
