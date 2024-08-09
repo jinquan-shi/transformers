@@ -30,6 +30,7 @@ from ...utils import add_start_docstrings, add_start_docstrings_to_model_forward
 from .configuration_vivit import VivitConfig
 
 from dkernel import SparseAttention, LocalStrideSparseAttention
+from flash_attn import flash_attn_func
 
 
 logger = logging.get_logger(__name__)
@@ -172,7 +173,7 @@ class VivitSelfAttention(nn.Module):
 
         self.dropout = nn.Dropout(config.attention_probs_dropout_prob)
 
-        self.attn_implementation = 'dkernel'
+        self.attn_implementation = 'flash'
 
         if self.attn_implementation:
             print('Utilizing dkernel')
@@ -239,13 +240,25 @@ class VivitSelfAttention(nn.Module):
     
             outputs = (context_layer, attention_probs) if output_attentions else (context_layer,)
 
-        else:
+        elif self.attn_implementation == 'dkernel':
             sm_scale = 1
             query_layer = query_layer.permute(0,2,1,3)
             key_layer = key_layer.permute(0,2,1,3)
             value_layer = value_layer.permute(0,2,1,3)
             
             context_layer = self.attn(query_layer, key_layer, value_layer, sm_scale)
+            new_context_layer_shape = context_layer.size()[:-2] + (self.all_head_size,)
+            context_layer = context_layer.view(new_context_layer_shape)
+
+            outputs = (context_layer,)
+
+        else:
+            sm_scale = 1
+            query_layer = query_layer.permute(0,2,1,3)
+            key_layer = key_layer.permute(0,2,1,3)
+            value_layer = value_layer.permute(0,2,1,3)
+            
+            context_layer = flash_attn_func(query_layer, key_layer, value_layer,  softmax_scale=sm_scale, causal=True)
             new_context_layer_shape = context_layer.size()[:-2] + (self.all_head_size,)
             context_layer = context_layer.view(new_context_layer_shape)
 
