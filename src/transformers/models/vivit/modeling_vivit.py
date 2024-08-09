@@ -240,6 +240,7 @@ class VivitSelfAttention(nn.Module):
             outputs = (context_layer, attention_probs) if output_attentions else (context_layer,)
 
         else:
+            sm_scale = 1
             outputs = self.attn(query_layer, key_layer, value_layer, sm_scale)
 
         return outputs
