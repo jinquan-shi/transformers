@@ -247,6 +247,7 @@ class VivitSelfAttention(nn.Module):
             # value_layer = value_layer.permute(0,2,1,3)
             
             context_layer = self.attn(query_layer, key_layer, value_layer, sm_scale)
+            context_layer = context_layer.permute(0, 2, 1, 3).contiguous()
             new_context_layer_shape = context_layer.size()[:-2] + (self.all_head_size,)
             context_layer = context_layer.view(new_context_layer_shape)
 
