@@ -245,8 +245,11 @@ class VivitSelfAttention(nn.Module):
             key_layer = key_layer.permute(0,2,1,3)
             value_layer = value_layer.permute(0,2,1,3)
             
-            outputs = self.attn(query_layer, key_layer, value_layer, sm_scale)
-            print(outputs.shape)
+            context_layer = self.attn(query_layer, key_layer, value_layer, sm_scale)
+            new_context_layer_shape = context_layer.size()[:-2] + (self.all_head_size,)
+            context_layer = context_layer.view(new_context_layer_shape)
+
+            outputs = (context_layer,)
 
         return outputs
 
