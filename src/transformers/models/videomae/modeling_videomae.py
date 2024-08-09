@@ -341,7 +341,7 @@ class VideoMAESparseSelfAttention(VideoMAESelfAttention):
         value_layer = self.transpose_for_scores(values)
         query_layer = self.transpose_for_scores(queries)
 
-        sm_scale = 1/math.sqrt(self.attention_head_size)
+        sm_scale = 1/math.sqrt(12)
            
         context_layer = self.attn(query_layer, key_layer, value_layer, sm_scale)
         
@@ -414,11 +414,13 @@ class VideoMAEAttention(nn.Module):
 class VideoMAESdpaAttention(VideoMAEAttention):
     def __init__(self, config: VideoMAEConfig) -> None:
         super().__init__(config)
+        print('sdpa')
         self.attention = VideoMAESdpaSelfAttention(config)
 
 class VideoMAESparseAttention(VideoMAEAttention):
     def __init__(self, config: VideoMAEConfig) -> None:
         super().__init__(config)
+        print('sparse')
         self.attention = VideoMAESparseSelfAttention(config)
 
 
@@ -471,7 +473,7 @@ class VideoMAELayer(nn.Module):
         self.output = VideoMAEOutput(config)
         self.layernorm_before = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
         self.layernorm_after = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
-
+        
     def forward(
         self,
         hidden_states: torch.Tensor,
