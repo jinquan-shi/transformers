@@ -193,7 +193,7 @@ class VivitSelfAttention(nn.Module):
                              block_size,
                              local_blocks,
                              vert_stride,
-                             seq_dim=1, # q/k/v layout: (batch, seq, heads, head_dim)
+                             seq_dim=2, # q/k/v layout: (batch, seq, heads, head_dim)
                             )
             self.attn.to(device).to(self.query.weight.dtype)
             # For the first time, it needs to warmup, so could be slow.
@@ -242,9 +242,9 @@ class VivitSelfAttention(nn.Module):
 
         elif self.attn_implementation == 'dkernel':
             sm_scale = 1
-            query_layer = query_layer.permute(0,2,1,3)
-            key_layer = key_layer.permute(0,2,1,3)
-            value_layer = value_layer.permute(0,2,1,3)
+            # query_layer = query_layer.permute(0,2,1,3)
+            # key_layer = key_layer.permute(0,2,1,3)
+            # value_layer = value_layer.permute(0,2,1,3)
             
             context_layer = self.attn(query_layer, key_layer, value_layer, sm_scale)
             new_context_layer_shape = context_layer.size()[:-2] + (self.all_head_size,)
