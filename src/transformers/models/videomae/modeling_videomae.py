@@ -416,6 +416,11 @@ class VideoMAESdpaAttention(VideoMAEAttention):
         super().__init__(config)
         self.attention = VideoMAESdpaSelfAttention(config)
 
+class VideoMAESparseAttention(VideoMAEAttention):
+    def __init__(self, config: VideoMAEConfig) -> None:
+        super().__init__(config)
+        self.attention = VideoMAESparseSelfAttention(config)
+
 
 # Copied from transformers.models.vit.modeling_vit.ViTIntermediate ViT->VideoMAE
 class VideoMAEIntermediate(nn.Module):
@@ -450,7 +455,7 @@ class VideoMAEOutput(nn.Module):
         return hidden_states
 
 
-VIDEOMAE_ATTENTION_CLASSES = {"eager": VideoMAEAttention, "sdpa": VideoMAESdpaAttention, "sparse": VideoMAESparseSelfAttention}
+VIDEOMAE_ATTENTION_CLASSES = {"eager": VideoMAEAttention, "sdpa": VideoMAESdpaAttention, "sparse": VideoMAESparseAttention}
 
 
 # Copied from transformers.models.vit.modeling_vit.ViTLayer with ViT->VideoMAE,VIT->VIDEOMAE
