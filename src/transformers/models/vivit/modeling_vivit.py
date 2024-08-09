@@ -241,12 +241,10 @@ class VivitSelfAttention(nn.Module):
             outputs = (context_layer, attention_probs) if output_attentions else (context_layer,)
 
         elif self.attn_implementation == 'dkernel':
-            sm_scale = 1
-            # query_layer = query_layer.permute(0,2,1,3)
-            # key_layer = key_layer.permute(0,2,1,3)
-            # value_layer = value_layer.permute(0,2,1,3)
-            
+            sm_scale = 1/math.sqrt(self.attention_head_size)
+           
             context_layer = self.attn(query_layer, key_layer, value_layer, sm_scale)
+            
             context_layer = context_layer.permute(0, 2, 1, 3).contiguous()
             new_context_layer_shape = context_layer.size()[:-2] + (self.all_head_size,)
             context_layer = context_layer.view(new_context_layer_shape)
@@ -254,12 +252,11 @@ class VivitSelfAttention(nn.Module):
             outputs = (context_layer,)
 
         elif self.attn_implementation == 'flash':
-            sm_scale = 1
-            query_layer = query_layer.permute(0,2,1,3)
-            key_layer = key_layer.permute(0,2,1,3)
-            value_layer = value_layer.permute(0,2,1,3)
+            sm_scale = 1/math.sqrt(self.attention_head_size)
             
             context_layer = flash_attn_func(query_layer, key_layer, value_layer,  softmax_scale=sm_scale, causal=True)
+
+            context_layer = context_layer.permute(0, 2, 1, 3).contiguous()
             new_context_layer_shape = context_layer.size()[:-2] + (self.all_head_size,)
             context_layer = context_layer.view(new_context_layer_shape)
 
