@@ -241,7 +241,12 @@ class VivitSelfAttention(nn.Module):
 
         else:
             sm_scale = 1
+            query_layer = query_layer.permute(0,2,1,3)
+            key_layer = key_layer.permute(0,2,1,3)
+            value_layer = value_layer.permute(0,2,1,3)
+            
             outputs = self.attn(query_layer, key_layer, value_layer, sm_scale)
+            print(outputs.shape)
 
         return outputs
 
