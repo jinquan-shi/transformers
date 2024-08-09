@@ -184,7 +184,7 @@ class VivitSelfAttention(nn.Module):
             num_heads = 32
             device = "cuda"
 
-            q, k, v = [torch.rand(1, 3137, 12, 64,
+            q, k, v = [torch.rand(1, 12, 3137, 64,
                 device=device).requires_grad_()
                 for _ in range(3)]
             self.attn = LocalStrideSparseAttention(
