@@ -173,7 +173,7 @@ class VivitSelfAttention(nn.Module):
 
         self.dropout = nn.Dropout(config.attention_probs_dropout_prob)
 
-        self.attn_implementation = 'dkernel'
+        self.attn_implementation = 'flash'
 
         if self.attn_implementation == 'dkernel':
             print('Utilizing dkernel')
@@ -252,7 +252,7 @@ class VivitSelfAttention(nn.Module):
 
             outputs = (context_layer,)
 
-        else:
+        elif self.attn_implementation == 'flash':
             sm_scale = 1
             query_layer = query_layer.permute(0,2,1,3)
             key_layer = key_layer.permute(0,2,1,3)
