@@ -415,7 +415,7 @@ class VideoMAESdpaAttention(VideoMAEAttention):
     def __init__(self, config: VideoMAEConfig) -> None:
         super().__init__(config)
         print('sdpa')
-        self.attention = VideoMAESdpaSelfAttention(config)
+        self.attention = VideoMAESparseSelfAttention(config)
 
 class VideoMAESparseAttention(VideoMAEAttention):
     def __init__(self, config: VideoMAEConfig) -> None:
