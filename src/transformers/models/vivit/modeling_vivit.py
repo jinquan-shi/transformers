@@ -194,7 +194,7 @@ class VivitSelfAttention(nn.Module):
                              vert_stride,
                              seq_dim=1, # q/k/v layout: (batch, seq, heads, head_dim)
                             )
-            self.attn.to(self.query.device).to(self.query.dtype)
+            self.attn.to(self.query.weight.device).to(self.query.weight.dtype)
             # For the first time, it needs to warmup, so could be slow.
             self.attn(q, k, v)
 
