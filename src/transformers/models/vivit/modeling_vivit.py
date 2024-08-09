@@ -187,7 +187,7 @@ class VivitSelfAttention(nn.Module):
                 device=device).requires_grad_()
                 for _ in range(3)]
             self.attn = LocalStrideSparseAttention(
-                             self.num_attention_heads
+                             self.num_attention_heads,
                              max_seq_len,
                              block_size,
                              local_blocks,
