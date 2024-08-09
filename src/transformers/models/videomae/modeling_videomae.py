@@ -41,6 +41,7 @@ from ...utils.constants import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 from .configuration_videomae import VideoMAEConfig
 
 from dkernel import SparseAttention, LocalStrideSparseAttention
+from flash_attn import flash_attn_func
 
 
 logger = logging.get_logger(__name__)
@@ -341,9 +342,9 @@ class VideoMAESparseSelfAttention(VideoMAESelfAttention):
         value_layer = self.transpose_for_scores(values)
         query_layer = self.transpose_for_scores(queries)
 
-        sm_scale = 1/math.sqrt(12)
+        sm_scale = 1/math.sqrt(64)
            
-        context_layer = self.attn(query_layer, key_layer, value_layer, sm_scale)
+        context_layer = flash_attn_func(query_layer, key_layer, value_layer,  softmax_scale=sm_scale, causal=True)
         
         context_layer = context_layer.permute(0, 2, 1, 3).contiguous()
         new_context_layer_shape = context_layer.size()[:-2] + (self.all_head_size,)
