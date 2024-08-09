@@ -175,7 +175,7 @@ class VivitSelfAttention(nn.Module):
 
         self.attn_implementation = 'flash'
 
-        if self.attn_implementation:
+        if self.attn_implementation == 'dkernel':
             print('Utilizing dkernel')
             block_size = 32 # sparse block size, minimum 16
             local_blocks = 32 # num local blocks, always attend to up to 64 * 16=1024 tokens
