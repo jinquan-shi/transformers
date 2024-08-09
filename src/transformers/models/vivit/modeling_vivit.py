@@ -173,7 +173,7 @@ class VivitSelfAttention(nn.Module):
 
         self.dropout = nn.Dropout(config.attention_probs_dropout_prob)
 
-        self.attn_implementation = None
+        self.attn_implementation = 'flash'
 
         if self.attn_implementation == 'dkernel':
             print('Utilizing dkernel')
