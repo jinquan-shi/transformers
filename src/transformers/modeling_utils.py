@@ -1514,7 +1514,7 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin, GenerationMixin, PushToHubMix
                     ' We recommend to just use `attn_implementation="flash_attention_2"` when loading the model.'
                 )
                 
-            if config._attn_implementation not in ["eager", "sdpa", "flash_attention_2", "sparse"]:
+            if config._attn_implementation not in ["eager", "sdpa", "flash", "flash_attention_2", "sparse"]:
                 message = f'Specified `attn_implementation="{config._attn_implementation}"` is not supported. The only possible arguments are `attn_implementation="eager"` (manual attention implementation)'
                 if cls._supports_flash_attn_2:
                     message += ', `"attn_implementation=flash_attention_2"` (implementation using flash attention 2)'
@@ -1555,6 +1555,31 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin, GenerationMixin, PushToHubMix
                     "Using the `SDPA` attention implementation on multi-gpu setup with ROCM may lead to performance issues due to the FA backend. Disabling it to use alternative backends."
                 )
                 torch.backends.cuda.enable_flash_sdp(False)
+        elif requested_attn_implementation == "flash":
+            try:
+                import flash_attn
+                from flash_attn import flash_attn_func
+                HAS_FLASH = True
+            except BaseException as e:
+                print(f'> error to import flash_attn: {e=}')
+                HAS_FLASH = False
+            if HAS_FLASH:
+                config._attn_implementation = "flash"
+            else:
+                config._attn_implementation = "eager"
+                print("Using eager instead.")
+        elif requested_attn_implementation == "sparse":
+            try:
+                import dkernel
+                HAS_DKERNEL = True
+            except BaseException as e:
+                print(f'> error to import dkernel: {e=}')
+                HAS_DKERNEL = False
+            if HAS_DKERNEL:
+                config._attn_implementation = "sparse"
+            else:
+                config._attn_implementation = "eager"
+                print("Using eager instead.")
         else:
             config._attn_implementation = "eager"
 

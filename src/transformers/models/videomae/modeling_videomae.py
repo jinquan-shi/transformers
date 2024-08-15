@@ -40,8 +40,17 @@ from ...utils import (
 from ...utils.constants import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 from .configuration_videomae import VideoMAEConfig
 
-from dkernel import SparseAttention, LocalStrideSparseAttention
-from flash_attn import flash_attn_func
+try:
+    import flash_attn
+    from flash_attn import flash_attn_func
+except BaseException as e:
+    print(f'> error to import flash_attn: {e=}')
+    
+try:
+    import dkernel
+    from dkernel import LocalStrideSparseAttention
+except BaseException as e:
+    print(f'> error to import dkernel: {e=}')
 
 
 logger = logging.get_logger(__name__)
@@ -302,12 +311,42 @@ class VideoMAESdpaSelfAttention(VideoMAESelfAttention):
 
         return context_layer, None
 
+class VideoMAEFlashSelfAttention(VideoMAESelfAttention):
+    def __init__(self, config: VideoMAEConfig) -> None:
+        super().__init__(config)
+        self.attention_probs_dropout_prob = config.attention_probs_dropout_prob
+
+    def forward(
+        self, hidden_states, head_mask: Optional[torch.Tensor] = None, output_attentions: bool = False
+    ) -> Union[Tuple[torch.Tensor, torch.Tensor], Tuple[torch.Tensor]]:
+        k_bias = torch.zeros_like(self.v_bias, requires_grad=False) if self.q_bias is not None else None
+        keys = nn.functional.linear(input=hidden_states, weight=self.key.weight, bias=k_bias)
+        values = nn.functional.linear(input=hidden_states, weight=self.value.weight, bias=self.v_bias)
+        queries = nn.functional.linear(input=hidden_states, weight=self.query.weight, bias=self.q_bias)
+
+        key_layer = self.transpose_for_scores(keys)
+        value_layer = self.transpose_for_scores(values)
+        query_layer = self.transpose_for_scores(queries)
+        context_layer = flash_attn_func(
+            query_layer,
+            key_layer,
+            value_layer,
+            dropout_p=self.attention_probs_dropout_prob if self.training else 0.0,
+            causal=True,
+            softmax_scale=1/math.sqrt(self.num_attention_heads)
+        )
+
+        context_layer = context_layer.permute(0, 2, 1, 3).contiguous()
+        new_context_layer_shape = context_layer.size()[:-2] + (self.all_head_size,)
+        context_layer = context_layer.view(new_context_layer_shape)
+
+        return context_layer, None
+
 class VideoMAESparseSelfAttention(VideoMAESelfAttention):
     def __init__(self, config: VideoMAEConfig) -> None:
         super().__init__(config)
         self.attention_probs_dropout_prob = config.attention_probs_dropout_prob
         
-        print('Utilizing dkernel')
         block_size = 32 # sparse block size, minimum 16
         local_blocks = 32 # num local blocks, always attend to up to 64 * 16=1024 tokens
         vert_stride = 8 # attend to 1 block per every 8 blocks after the local window above
@@ -415,13 +454,16 @@ class VideoMAEAttention(nn.Module):
 class VideoMAESdpaAttention(VideoMAEAttention):
     def __init__(self, config: VideoMAEConfig) -> None:
         super().__init__(config)
-        print('sdpa')
-        self.attention = VideoMAESparseSelfAttention(config)
+        self.attention = VideoMAESdpaSelfAttention(config)
+
+class VideoMAEFlashAttention(VideoMAEAttention):
+    def __init__(self, config: VideoMAEConfig) -> None:
+        super().__init__(config)
+        self.attention = VideoMAEFlashSelfAttention(config)
 
 class VideoMAESparseAttention(VideoMAEAttention):
     def __init__(self, config: VideoMAEConfig) -> None:
         super().__init__(config)
-        print('sparse')
         self.attention = VideoMAESparseSelfAttention(config)
 
 
@@ -458,7 +500,7 @@ class VideoMAEOutput(nn.Module):
         return hidden_states
 
 
-VIDEOMAE_ATTENTION_CLASSES = {"eager": VideoMAEAttention, "sdpa": VideoMAESdpaAttention, "sparse": VideoMAESparseAttention}
+VIDEOMAE_ATTENTION_CLASSES = {"eager": VideoMAEAttention, "sdpa": VideoMAESdpaAttention, "flash":VideoMAEFlashAttention,"sparse": VideoMAESparseAttention}
 
 
 # Copied from transformers.models.vit.modeling_vit.ViTLayer with ViT->VideoMAE,VIT->VIDEOMAE
