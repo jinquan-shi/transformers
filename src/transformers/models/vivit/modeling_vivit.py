@@ -29,10 +29,18 @@ from ...pytorch_utils import find_pruneable_heads_and_indices, prune_linear_laye
 from ...utils import add_start_docstrings, add_start_docstrings_to_model_forward, logging, replace_return_docstrings
 from .configuration_vivit import VivitConfig
 
-from dkernel import SparseAttention, LocalStrideSparseAttention
-from flash_attn import flash_attn_func
-
-
+try:
+    import flash_attn
+    from flash_attn import flash_attn_func
+except BaseException as e:
+    print(f'> error to import flash_attn: {e=}')
+    
+try:
+    import dkernel
+    from dkernel import LocalStrideSparseAttention
+except BaseException as e:
+    print(f'> error to import dkernel: {e=}')
+    
 logger = logging.get_logger(__name__)
 
 _CHECKPOINT_FOR_DOC = "google/vivit-b-16x2-kinetics400"
@@ -173,33 +181,6 @@ class VivitSelfAttention(nn.Module):
 
         self.dropout = nn.Dropout(config.attention_probs_dropout_prob)
 
-        self.attn_implementation = 'flash'
-
-        if self.attn_implementation == 'dkernel':
-            print('Utilizing dkernel')
-            block_size = 32 # sparse block size, minimum 16
-            local_blocks = 32 # num local blocks, always attend to up to 64 * 16=1024 tokens
-            vert_stride = 8 # attend to 1 block per every 8 blocks after the local window above
-            max_seq_len = 3137 # model supports up to 8192 seqlen
-            num_heads = 32
-            device = "cuda"
-
-            q, k, v = [torch.rand(1, 12, 3137, 64,
-                device=device).requires_grad_()
-                for _ in range(3)]
-            self.attn = LocalStrideSparseAttention(
-                             self.num_attention_heads,
-                             max_seq_len,
-                             block_size,
-                             local_blocks,
-                             vert_stride,
-                             seq_dim=2, # q/k/v layout: (batch, seq, heads, head_dim)
-                            )
-            self.attn.to(device).to(self.query.weight.dtype)
-            # For the first time, it needs to warmup, so could be slow.
-            self.attn(q, k, v)
-
-
     def transpose_for_scores(self, x: torch.Tensor) -> torch.Tensor:
         new_x_shape = x.size()[:-1] + (self.num_attention_heads, self.attention_head_size)
         x = x.view(new_x_shape)
@@ -214,56 +195,108 @@ class VivitSelfAttention(nn.Module):
         value_layer = self.transpose_for_scores(self.value(hidden_states))
         query_layer = self.transpose_for_scores(mixed_query_layer)
 
-        if not self.attn_implementation:
-            # Take the dot product between "query" and "key" to get the raw attention scores.
-            attention_scores = torch.matmul(query_layer, key_layer.transpose(-1, -2))
-    
-            attention_scores = attention_scores / math.sqrt(self.attention_head_size)
-    
-            # Normalize the attention scores to probabilities.
-            attention_probs = nn.functional.softmax(attention_scores, dim=-1)
+        # Take the dot product between "query" and "key" to get the raw attention scores.
+        attention_scores = torch.matmul(query_layer, key_layer.transpose(-1, -2))
 
+        attention_scores = attention_scores / math.sqrt(self.attention_head_size)
 
-            # This is actually dropping out entire tokens to attend to, which might
-            # seem a bit unusual, but is taken from the original Transformer paper.
-            attention_probs = self.dropout(attention_probs)
-    
-            # Mask heads if we want to
-            if head_mask is not None:
-                attention_probs = attention_probs * head_mask
-    
-            context_layer = torch.matmul(attention_probs, value_layer)
-    
-            context_layer = context_layer.permute(0, 2, 1, 3).contiguous()
-            new_context_layer_shape = context_layer.size()[:-2] + (self.all_head_size,)
-            context_layer = context_layer.view(new_context_layer_shape)
-    
-            outputs = (context_layer, attention_probs) if output_attentions else (context_layer,)
+        # Normalize the attention scores to probabilities.
+        attention_probs = nn.functional.softmax(attention_scores, dim=-1)
 
-        elif self.attn_implementation == 'dkernel':
-            sm_scale = 1/math.sqrt(self.attention_head_size)
-           
-            context_layer = self.attn(query_layer, key_layer, value_layer, sm_scale)
-            
-            context_layer = context_layer.permute(0, 2, 1, 3).contiguous()
-            new_context_layer_shape = context_layer.size()[:-2] + (self.all_head_size,)
-            context_layer = context_layer.view(new_context_layer_shape)
+        # This is actually dropping out entire tokens to attend to, which might
+        # seem a bit unusual, but is taken from the original Transformer paper.
+        attention_probs = self.dropout(attention_probs)
 
-            outputs = (context_layer,)
+        # Mask heads if we want to
+        if head_mask is not None:
+            attention_probs = attention_probs * head_mask
 
-        elif self.attn_implementation == 'flash':
-            sm_scale = 1/math.sqrt(self.attention_head_size)
-            
-            context_layer = flash_attn_func(query_layer, key_layer, value_layer,  softmax_scale=sm_scale, causal=True)
+        context_layer = torch.matmul(attention_probs, value_layer)
 
-            context_layer = context_layer.permute(0, 2, 1, 3).contiguous()
-            new_context_layer_shape = context_layer.size()[:-2] + (self.all_head_size,)
-            context_layer = context_layer.view(new_context_layer_shape)
+        context_layer = context_layer.permute(0, 2, 1, 3).contiguous()
+        new_context_layer_shape = context_layer.size()[:-2] + (self.all_head_size,)
+        context_layer = context_layer.view(new_context_layer_shape)
 
-            outputs = (context_layer,)
+        outputs = (context_layer, attention_probs) if output_attentions else (context_layer,)
 
         return outputs
 
+class VivitFlashSelfAttention(VivitSelfAttention):
+    def __init__(self, config: VivitConfig) -> None:
+        super().__init__(config)
+        self.attention_probs_dropout_prob = config.attention_probs_dropout_prob
+
+    def forward(
+        self, hidden_states, head_mask: Optional[torch.Tensor] = None, output_attentions: bool = False
+    ) -> Union[Tuple[torch.Tensor, torch.Tensor], Tuple[torch.Tensor]]:
+        mixed_query_layer = self.query(hidden_states)
+        
+        key_layer = self.transpose_for_scores(self.key(hidden_states))
+        value_layer = self.transpose_for_scores(self.value(hidden_states))
+        query_layer = self.transpose_for_scores(mixed_query_layer)
+
+        context_layer = flash_attn_func(
+            query_layer,
+            key_layer,
+            value_layer,
+            dropout_p=self.attention_probs_dropout_prob if self.training else 0.0,
+            causal=True,
+            softmax_scale=1/math.sqrt(self.attention_head_size)
+        )
+
+        context_layer = context_layer.permute(0, 2, 1, 3).contiguous()
+        new_context_layer_shape = context_layer.size()[:-2] + (self.all_head_size,)
+        context_layer = context_layer.view(new_context_layer_shape)
+
+        return context_layer, None
+
+class VivitSparseSelfAttention(VivitSelfAttention):
+    def __init__(self, config: VivitConfig) -> None:
+        super().__init__(config)
+        self.attention_probs_dropout_prob = config.attention_probs_dropout_prob
+        
+        block_size = 32 # sparse block size, minimum 16
+        local_blocks = 32 # num local blocks, always attend to up to 64 * 16=1024 tokens
+        vert_stride = 8 # attend to 1 block per every 8 blocks after the local window above
+        max_seq_len = 3137 # model supports up to 8192 seqlen
+        num_heads = 32
+        device = "cuda"
+
+        q, k, v = [torch.rand(8, self.num_attention_heads, max_seq_len, self.attention_head_size,
+            device=device).requires_grad_()
+            for _ in range(3)]
+        self.attn = LocalStrideSparseAttention(
+                         self.num_attention_heads,
+                         max_seq_len,
+                         block_size,
+                         local_blocks,
+                         vert_stride,
+                         seq_dim=2, # q/k/v layout: (batch, seq, heads, head_dim)
+                        )
+        self.attn.to(device).to(self.query.weight.dtype)
+        # For the first time, it needs to warmup, so could be slow.
+        self.attn(q, k, v)
+        
+        self.sm_scale = 1/math.sqrt(self.attention_head_size)
+
+    def forward(
+        self, hidden_states, head_mask: Optional[torch.Tensor] = None, output_attentions: bool = False
+    ) -> Union[Tuple[torch.Tensor, torch.Tensor], Tuple[torch.Tensor]]:
+        mixed_query_layer = self.query(hidden_states)
+        
+        key_layer = self.transpose_for_scores(self.key(hidden_states))
+        value_layer = self.transpose_for_scores(self.value(hidden_states))
+        query_layer = self.transpose_for_scores(mixed_query_layer)
+
+       
+           
+        context_layer = self.attn(query_layer, key_layer, value_layer, self.sm_scale)
+        
+        context_layer = context_layer.permute(0, 2, 1, 3).contiguous()
+        new_context_layer_shape = context_layer.size()[:-2] + (self.all_head_size,)
+        context_layer = context_layer.view(new_context_layer_shape)
+
+        return context_layer, None
 
 # Copied from transformers.models.vit.modeling_vit.ViTSelfOutput with ViT->Vivit
 class VivitSelfOutput(nn.Module):
@@ -283,12 +316,13 @@ class VivitSelfOutput(nn.Module):
 
         return hidden_states
 
+VIVIT_ATTENTION_CLASSES = {"eager": VivitSelfAttention, "flash":VivitFlashSelfAttention,"sparse": VivitSparseSelfAttention}
 
 # Copied from transformers.models.vit.modeling_vit.ViTAttention with ViT->Vivit
 class VivitAttention(nn.Module):
     def __init__(self, config: VivitConfig) -> None:
         super().__init__()
-        self.attention = VivitSelfAttention(config)
+        self.attention = VIVIT_ATTENTION_CLASSES[config._attn_implementation](config)
         self.output = VivitSelfOutput(config)
         self.pruned_heads = set()
 
