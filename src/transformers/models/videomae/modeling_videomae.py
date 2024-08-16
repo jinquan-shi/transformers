@@ -315,6 +315,7 @@ class VideoMAEFlashSelfAttention(VideoMAESelfAttention):
     def __init__(self, config: VideoMAEConfig) -> None:
         super().__init__(config)
         self.attention_probs_dropout_prob = config.attention_probs_dropout_prob
+        self.sm_scale = 1/math.sqrt(self.attention_head_size)
 
     def forward(
         self, hidden_states, head_mask: Optional[torch.Tensor] = None, output_attentions: bool = False
@@ -333,7 +334,7 @@ class VideoMAEFlashSelfAttention(VideoMAESelfAttention):
             value_layer,
             dropout_p=self.attention_probs_dropout_prob if self.training else 0.0,
             causal=False,
-            softmax_scale=1/math.sqrt(self.num_attention_heads)
+            softmax_scale=self.sm_scale,
         )
 
         context_layer = context_layer.permute(0, 2, 1, 3).contiguous()
@@ -347,9 +348,9 @@ class VideoMAESparseSelfAttention(VideoMAESelfAttention):
         super().__init__(config)
         self.attention_probs_dropout_prob = config.attention_probs_dropout_prob
         
-        block_size = 32 # sparse block size, minimum 16
-        local_blocks = 16 # num local blocks, always attend to up to 64 * 16=1024 tokens
-        vert_stride = 16 # attend to 1 block per every 8 blocks after the local window above
+        block_size = 16 # sparse block size, minimum 16
+        local_blocks = 8 # num local blocks
+        vert_stride = 16 # attend to 1 block per every 16 blocks after the local window above
         max_seq_len = 1568 # model supports up to 8192 seqlen
         device = "cuda"
 
@@ -367,6 +368,8 @@ class VideoMAESparseSelfAttention(VideoMAESelfAttention):
         self.attn.to(device).to(self.query.weight.dtype)
         # For the first time, it needs to warmup, so could be slow.
         self.attn(q, k, v)
+        
+        self.sm_scale = 1/math.sqrt(self.attention_head_size)
 
     def forward(
         self, hidden_states, head_mask: Optional[torch.Tensor] = None, output_attentions: bool = False
@@ -379,10 +382,8 @@ class VideoMAESparseSelfAttention(VideoMAESelfAttention):
         key_layer = self.transpose_for_scores(keys)
         value_layer = self.transpose_for_scores(values)
         query_layer = self.transpose_for_scores(queries)
-
-        sm_scale = 1/math.sqrt(64)
            
-        context_layer = self.attn(query_layer, key_layer, value_layer, sm_scale)
+        context_layer = self.attn(query_layer, key_layer, value_layer, self.sm_scale)
         
         context_layer = context_layer.permute(0, 2, 1, 3).contiguous()
         new_context_layer_shape = context_layer.size()[:-2] + (self.all_head_size,)
