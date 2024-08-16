@@ -349,7 +349,7 @@ class VideoMAESparseSelfAttention(VideoMAESelfAttention):
         self.attention_probs_dropout_prob = config.attention_probs_dropout_prob
         
         block_size = 32 # sparse block size, minimum 16
-        local_blocks = 16 # num local blocks
+        local_blocks = 24 # num local blocks
         vert_stride = 16 # attend to 1 block per every 16 blocks after the local window above
         max_seq_len = 1568 # model supports up to 8192 seqlen
         device = "cuda"
