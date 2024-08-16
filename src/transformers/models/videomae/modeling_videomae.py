@@ -332,7 +332,7 @@ class VideoMAEFlashSelfAttention(VideoMAESelfAttention):
             key_layer,
             value_layer,
             dropout_p=self.attention_probs_dropout_prob if self.training else 0.0,
-            causal=True,
+            causal=False,
             softmax_scale=1/math.sqrt(self.num_attention_heads)
         )
 
@@ -348,13 +348,12 @@ class VideoMAESparseSelfAttention(VideoMAESelfAttention):
         self.attention_probs_dropout_prob = config.attention_probs_dropout_prob
         
         block_size = 32 # sparse block size, minimum 16
-        local_blocks = 32 # num local blocks, always attend to up to 64 * 16=1024 tokens
-        vert_stride = 8 # attend to 1 block per every 8 blocks after the local window above
+        local_blocks = 16 # num local blocks, always attend to up to 64 * 16=1024 tokens
+        vert_stride = 16 # attend to 1 block per every 8 blocks after the local window above
         max_seq_len = 1568 # model supports up to 8192 seqlen
-        num_heads = 32
         device = "cuda"
 
-        q, k, v = [torch.rand(1, 12, 1568, 64,
+        q, k, v = [torch.rand(1, self.num_attention_heads, 1568, self.attention_head_size,
             device=device).requires_grad_()
             for _ in range(3)]
         self.attn = LocalStrideSparseAttention(
