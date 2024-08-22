@@ -347,27 +347,36 @@ class VideoMAEFlashSelfAttention(VideoMAESelfAttention):
 
         return context_layer, None
 
+
 class VideoMAESparseSelfAttention(VideoMAESelfAttention):
     def __init__(self, config: VideoMAEConfig) -> None:
         super().__init__(config)
         self.attention_probs_dropout_prob = config.attention_probs_dropout_prob
         
+        image_size = config.image_size
+        patch_size = config.patch_size
+        num_frames = config.num_frames
+        tubelet_size = config.tubelet_size
+        
+        seq_len = (
+            (image_size // patch_size) * (image_size // patch_size) * (num_frames // tubelet_size)
+        )
+        
         block_size = 32 # sparse block size, minimum 16
         local_blocks = 24 # num local blocks
         vert_stride = 16 # attend to 1 block per every 16 blocks after the local window above
-        max_seq_len = 1568 # model supports up to 8192 seqlen
         device = "cuda"
 
-        q, k, v = [torch.rand(1, self.num_attention_heads, 1568, self.attention_head_size,
+        q, k, v = [torch.rand(1, seq_len, self.num_attention_heads, self.attention_head_size,
             device=device).requires_grad_()
             for _ in range(3)]
         self.attn = LocalStrideSparseAttention(
                          self.num_attention_heads,
-                         max_seq_len,
+                         seq_len,
                          block_size,
                          local_blocks,
                          vert_stride,
-                         seq_dim=2, # q/k/v layout: (batch, seq, heads, head_dim)
+                         seq_dim=1, # q/k/v layout: (batch, seq, heads, head_dim)
                         )
         self.attn.to(device).to(self.query.weight.dtype)
         # For the first time, it needs to warmup, so could be slow.
@@ -383,17 +392,18 @@ class VideoMAESparseSelfAttention(VideoMAESelfAttention):
         values = nn.functional.linear(input=hidden_states, weight=self.value.weight, bias=self.v_bias)
         queries = nn.functional.linear(input=hidden_states, weight=self.query.weight, bias=self.q_bias)
 
-        key_layer = self.transpose_for_scores(keys)
-        value_layer = self.transpose_for_scores(values)
-        query_layer = self.transpose_for_scores(queries)
+        key_layer = self.transpose_for_flash(keys)
+        value_layer = self.transpose_for_flash(values)
+        query_layer = self.transpose_for_flash(queries)
            
         context_layer = self.attn(query_layer, key_layer, value_layer, self.sm_scale)
         
-        context_layer = context_layer.permute(0, 2, 1, 3).contiguous()
+        context_layer = context_layer.contiguous()
         new_context_layer_shape = context_layer.size()[:-2] + (self.all_head_size,)
         context_layer = context_layer.view(new_context_layer_shape)
 
         return context_layer, None
+    
 
 # Copied from transformers.models.vit.modeling_vit.ViTSelfOutput with ViT->VideoMAE
 class VideoMAESelfOutput(nn.Module):
