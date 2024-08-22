@@ -238,6 +238,11 @@ class VideoMAESelfAttention(nn.Module):
         new_x_shape = x.size()[:-1] + (self.num_attention_heads, self.attention_head_size)
         x = x.view(new_x_shape)
         return x.permute(0, 2, 1, 3)
+    
+    def transpose_for_flash(self, x: torch.Tensor) -> torch.Tensor:
+        new_x_shape = x.size()[:-1] + (self.num_attention_heads, self.attention_head_size)
+        x = x.view(new_x_shape)
+        return x
 
     def forward(
         self, hidden_states, head_mask: Optional[torch.Tensor] = None, output_attentions: bool = False
@@ -315,7 +320,6 @@ class VideoMAEFlashSelfAttention(VideoMAESelfAttention):
     def __init__(self, config: VideoMAEConfig) -> None:
         super().__init__(config)
         self.attention_probs_dropout_prob = config.attention_probs_dropout_prob
-        self.sm_scale = 1/math.sqrt(self.attention_head_size)
 
     def forward(
         self, hidden_states, head_mask: Optional[torch.Tensor] = None, output_attentions: bool = False
@@ -325,19 +329,19 @@ class VideoMAEFlashSelfAttention(VideoMAESelfAttention):
         values = nn.functional.linear(input=hidden_states, weight=self.value.weight, bias=self.v_bias)
         queries = nn.functional.linear(input=hidden_states, weight=self.query.weight, bias=self.q_bias)
 
-        key_layer = self.transpose_for_scores(keys)
-        value_layer = self.transpose_for_scores(values)
-        query_layer = self.transpose_for_scores(queries)
+        key_layer = self.transpose_for_flash(keys)
+        value_layer = self.transpose_for_flash(values)
+        query_layer = self.transpose_for_flash(queries)
         context_layer = flash_attn_func(
             query_layer,
             key_layer,
             value_layer,
             dropout_p=self.attention_probs_dropout_prob if self.training else 0.0,
             causal=False,
-            softmax_scale=self.sm_scale,
+            softmax_scale=None,
         )
 
-        context_layer = context_layer.permute(0, 2, 1, 3).contiguous()
+        context_layer = context_layer.contiguous()
         new_context_layer_shape = context_layer.size()[:-2] + (self.all_head_size,)
         context_layer = context_layer.view(new_context_layer_shape)
 
