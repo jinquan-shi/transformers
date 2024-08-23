@@ -185,6 +185,11 @@ class VivitSelfAttention(nn.Module):
         new_x_shape = x.size()[:-1] + (self.num_attention_heads, self.attention_head_size)
         x = x.view(new_x_shape)
         return x.permute(0, 2, 1, 3)
+    
+    def transpose_for_flash(self, x: torch.Tensor) -> torch.Tensor:
+        new_x_shape = x.size()[:-1] + (self.num_attention_heads, self.attention_head_size)
+        x = x.view(new_x_shape)
+        return x
 
     def forward(
         self, hidden_states, head_mask: Optional[torch.Tensor] = None, output_attentions: bool = False
@@ -231,20 +236,19 @@ class VivitFlashSelfAttention(VivitSelfAttention):
     ) -> Union[Tuple[torch.Tensor, torch.Tensor], Tuple[torch.Tensor]]:
         mixed_query_layer = self.query(hidden_states)
         
-        key_layer = self.transpose_for_scores(self.key(hidden_states))
-        value_layer = self.transpose_for_scores(self.value(hidden_states))
-        query_layer = self.transpose_for_scores(mixed_query_layer)
+        key_layer = self.transpose_for_flash(self.key(hidden_states))
+        value_layer = self.transpose_for_flash(self.value(hidden_states))
+        query_layer = self.transpose_for_flash(mixed_query_layer)
 
         context_layer = flash_attn_func(
             query_layer,
             key_layer,
             value_layer,
             dropout_p=self.attention_probs_dropout_prob if self.training else 0.0,
-            causal=True,
-            softmax_scale=1/math.sqrt(self.attention_head_size)
+            causal=False,
         )
 
-        context_layer = context_layer.permute(0, 2, 1, 3).contiguous()
+        context_layer = context_layer.contiguous()
         new_context_layer_shape = context_layer.size()[:-2] + (self.all_head_size,)
         context_layer = context_layer.view(new_context_layer_shape)
 
@@ -255,44 +259,44 @@ class VivitSparseSelfAttention(VivitSelfAttention):
         super().__init__(config)
         self.attention_probs_dropout_prob = config.attention_probs_dropout_prob
         
-        block_size = 32 # sparse block size, minimum 16
-        local_blocks = 32 # num local blocks, always attend to up to 64 * 16=1024 tokens
-        vert_stride = 8 # attend to 1 block per every 8 blocks after the local window above
-        max_seq_len = 3137 # model supports up to 8192 seqlen
-        num_heads = 32
+        self.num_frames = config.num_frames
+        self.image_size = config.image_size
+        self.patch_size = config.tubelet_size
+        self.seq_len = 3137
+        block_size = 64 # sparse block size, minimum 16
+        local_blocks = 8 # num local blocks, always attend to up to 64 * 16=1024 tokens
+        vert_stride = 16 # attend to 1 block per every 8 blocks after the local window above
         device = "cuda"
 
-        q, k, v = [torch.rand(8, self.num_attention_heads, max_seq_len, self.attention_head_size,
+        q, k, v = [torch.rand(8, self.seq_len, self.num_attention_heads, self.attention_head_size,
             device=device).requires_grad_()
             for _ in range(3)]
         self.attn = LocalStrideSparseAttention(
                          self.num_attention_heads,
-                         max_seq_len,
+                         self.seq_len,
                          block_size,
                          local_blocks,
                          vert_stride,
-                         seq_dim=2, # q/k/v layout: (batch, seq, heads, head_dim)
+                         seq_dim=1, # q/k/v layout: (batch, seq, heads, head_dim)
                         )
         self.attn.to(device).to(self.query.weight.dtype)
         # For the first time, it needs to warmup, so could be slow.
         self.attn(q, k, v)
+        self.sm_scale = 1.0 / math.sqrt(self.attention_head_size)
         
-        self.sm_scale = 1/math.sqrt(self.attention_head_size)
 
     def forward(
         self, hidden_states, head_mask: Optional[torch.Tensor] = None, output_attentions: bool = False
     ) -> Union[Tuple[torch.Tensor, torch.Tensor], Tuple[torch.Tensor]]:
         mixed_query_layer = self.query(hidden_states)
         
-        key_layer = self.transpose_for_scores(self.key(hidden_states))
-        value_layer = self.transpose_for_scores(self.value(hidden_states))
-        query_layer = self.transpose_for_scores(mixed_query_layer)
+        key_layer = self.transpose_for_flash(self.key(hidden_states))
+        value_layer = self.transpose_for_flash(self.value(hidden_states))
+        query_layer = self.transpose_for_flash(mixed_query_layer)
 
-       
-           
-        context_layer = self.attn(query_layer, key_layer, value_layer, self.sm_scale)
+        context_layer = self.attn(query_layer, key_layer, value_layer, sm_scale=self.sm_scale)
         
-        context_layer = context_layer.permute(0, 2, 1, 3).contiguous()
+        context_layer = context_layer.contiguous()
         new_context_layer_shape = context_layer.size()[:-2] + (self.all_head_size,)
         context_layer = context_layer.view(new_context_layer_shape)
 
